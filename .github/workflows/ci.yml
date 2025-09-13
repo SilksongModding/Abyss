@@ -74,6 +74,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        rust: [stable, beta, nightly]
     outputs:
       total_matrix_jobs: ${{ strategy.job-total || 0 }}
     steps:
@@ -86,7 +87,7 @@ jobs:
         if: runner.os != 'Windows'
         uses: dtolnay/rust-toolchain@v1
         with:
-          toolchain: stable
+          toolchain: ${{ matrix.rust }}
       - name: Smoke-test Rust availability (non-Windows)
         if: runner.os != 'Windows'
         run: |
@@ -96,7 +97,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ matrix.rust }}
           echo "CARGO_HOME=$HOME/.cargo" >> $GITHUB_ENV
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
       - name: Smoke-test Rust availability (Windows)
@@ -104,6 +105,21 @@ jobs:
         run: |
           rustc --version
           cargo --version
+
+      - name: Install jq
+        run: |
+          set -euo pipefail
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y jq
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            brew install jq || true
+          fi
+        shell: bash
+        if: runner.os != 'Windows'
+
+      - name: Install jq (Windows)
+        if: runner.os == 'Windows'
+        run: choco install jq -y
 
       - name: Cache cargo registry
         id: cache-cargo-registry
@@ -126,22 +142,56 @@ jobs:
             ${{ runner.os }}-cargo-target-
       - name: Install dependencies (if any)
         uses: ./.github/actions/install-deps
-      - name: Run tests via Makefile
+      - name: Run tests (cargo JSON) and generate JUnit
         id: run-tests
         run: |
-          set -o pipefail
-          make test 2>&1 | tee build-output.log || true
-          PASSED=$(grep -Eo '([0-9]+) passed' build-output.log | awk '{s+=$1} END {print s+0}') || PASSED=0
-          FAILED=$(grep -Eo '([0-9]+) failed' build-output.log | awk '{s+=$1} END {print s+0}') || FAILED=0
-          SKIPPED=$(grep -Eo '([0-9]+) skipped' build-output.log | awk '{s+=$1} END {print s+0}') || SKIPPED=0
-          TOTAL=$((PASSED + FAILED + SKIPPED))
+          set -euo pipefail
+          # Run cargo test with JSON output and capture everything
+          cargo test --all --message-format=json 2>&1 | tee cargo-test.json || true
+
+          # Extract test events (type == "test") and count event outcomes
+          PASSED=$(jq -r 'select(.type=="test" and .event=="ok") | .name' cargo-test.json 2>/dev/null | wc -l || true)
+          FAILED=$(jq -r 'select(.type=="test" and .event=="failed") | .name' cargo-test.json 2>/dev/null | wc -l || true)
+          IGNORED=$(jq -r 'select(.type=="test" and .event=="ignored") | .name' cargo-test.json 2>/dev/null | wc -l || true)
+          TOTAL=$((PASSED + FAILED + IGNORED))
+
+          # Write outputs
           echo "tests_passed=$PASSED" >> $GITHUB_OUTPUT
           echo "tests_failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "tests_skipped=$SKIPPED" >> $GITHUB_OUTPUT
+          echo "tests_skipped=$IGNORED" >> $GITHUB_OUTPUT
           echo "tests_total=$TOTAL" >> $GITHUB_OUTPUT
+
+          # Produce a minimal JUnit XML
+          mkdir -p test-results
+          echo "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" > test-results/results.xml
+          echo "<testsuites>" >> test-results/results.xml
+          echo "  <testsuite name=\"cargo-tests\" tests=\"$TOTAL\" failures=\"$FAILED\" skipped=\"$IGNORED\">" >> test-results/results.xml
+
+          jq -c 'select(.type=="test") | {name: .name, event: .event, exec_time: .exec_time}' cargo-test.json 2>/dev/null | while read -r line; do
+            name=$(jq -r '.name' <<<"$line")
+            event=$(jq -r '.event' <<<"$line")
+            time=$(jq -r '.exec_time // 0' <<<"$line")
+            if [ "$event" = "ok" ]; then
+              echo "    <testcase name=\"${name}\" time=\"${time}\"/>" >> test-results/results.xml
+            elif [ "$event" = "failed" ]; then
+              echo "    <testcase name=\"${name}\" time=\"${time}\">" >> test-results/results.xml
+              echo "      <failure/>" >> test-results/results.xml
+              echo "    </testcase>" >> test-results/results.xml
+            elif [ "$event" = "ignored" ]; then
+              echo "    <testcase name=\"${name}\" time=\"${time}\">" >> test-results/results.xml
+              echo "      <skipped/>" >> test-results/results.xml
+              echo "    </testcase>" >> test-results/results.xml
+            fi
+          done
+
+          echo "  </testsuite>" >> test-results/results.xml
+          echo "</testsuites>" >> test-results/results.xml
+
+          # Fail if any test failed
           if [ "$FAILED" -gt 0 ]; then
             exit 1
           fi
+        shell: bash
 
       - name: Build release via Makefile
         run: make release
@@ -152,6 +202,11 @@ jobs:
           name: abyss-release-${{ matrix.os }}
           path: |
             ${{ runner.os == 'Windows' && 'target\\release\\abyss.exe' || 'target/release/abyss' }}
+      - name: Upload test results (JUnit)
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.os }}-${{ matrix.rust }}
+          path: test-results/results.xml
       - name: Collect Build Metrics
         id: collect-metrics
         uses: ./.github/actions/ci-utils
@@ -159,7 +214,7 @@ jobs:
           command: collect-metrics
           os: ${{ matrix.os }}
           runtime-version: stable
-          cache-hit: ${{ steps.cache-cargo-registry.outputs.cache-hit || 'false' }}
+          cache-hit: ${{ (steps.cache-cargo-registry.outputs.cache-hit == 'true') || (steps.cache-cargo-target.outputs.cache-hit == 'true') }}
           tests-total: ${{ steps.run-tests.outputs.tests_total || '0' }}
           tests-passed: ${{ steps.run-tests.outputs.tests_passed || '0' }}
           tests-failed: ${{ steps.run-tests.outputs.tests_failed || '0' }}
