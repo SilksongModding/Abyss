@@ -11,6 +11,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Start Build Timer
+        uses: ./.github/actions/ci-utils
+        with:
+          command: start-timer
       - uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: stable
@@ -38,7 +42,23 @@ jobs:
       - name: Run clippy via Makefile
         run: make clippy
       - name: Run tests via Makefile
-        run: make test
+        id: run-tests
+        run: |
+          set -o pipefail
+          # Run tests via Makefile and capture output
+          make test 2>&1 | tee build-output.log || true
+          # Try to extract test counts
+          PASSED=$(grep -Eo '([0-9]+) passed' build-output.log | awk '{s+=$1} END {print s+0}') || PASSED=0
+          FAILED=$(grep -Eo '([0-9]+) failed' build-output.log | awk '{s+=$1} END {print s+0}') || FAILED=0
+          SKIPPED=$(grep -Eo '([0-9]+) skipped' build-output.log | awk '{s+=$1} END {print s+0}') || SKIPPED=0
+          TOTAL=$((PASSED + FAILED + SKIPPED))
+          echo "tests_passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "tests_failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "tests_skipped=$SKIPPED" >> $GITHUB_OUTPUT
+          echo "tests_total=$TOTAL" >> $GITHUB_OUTPUT
+          if [ "$FAILED" -gt 0 ]; then
+            exit 1
+          fi
 
       - name: Build release via Makefile
         run: make release
@@ -54,8 +74,14 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+    outputs:
+      total_matrix_jobs: ${{ strategy.job-total || 0 }}
     steps:
       - uses: actions/checkout@v4
+      - name: Start Build Timer
+        uses: ./.github/actions/ci-utils
+        with:
+          command: start-timer
       - name: Set up Rust
         if: runner.os != 'Windows'
         uses: dtolnay/rust-toolchain@v1
@@ -80,6 +106,7 @@ jobs:
           cargo --version
 
       - name: Cache cargo registry
+        id: cache-cargo-registry
         uses: actions/cache@v4
         with:
           path: |
@@ -90,12 +117,31 @@ jobs:
             ${{ runner.os }}-cargo-registry-
 
       - name: Cache cargo target
+        id: cache-cargo-target
         uses: actions/cache@v4
         with:
           path: target
           key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-target-
+      - name: Install dependencies (if any)
+        uses: ./.github/actions/install-deps
+      - name: Run tests via Makefile
+        id: run-tests
+        run: |
+          set -o pipefail
+          make test 2>&1 | tee build-output.log || true
+          PASSED=$(grep -Eo '([0-9]+) passed' build-output.log | awk '{s+=$1} END {print s+0}') || PASSED=0
+          FAILED=$(grep -Eo '([0-9]+) failed' build-output.log | awk '{s+=$1} END {print s+0}') || FAILED=0
+          SKIPPED=$(grep -Eo '([0-9]+) skipped' build-output.log | awk '{s+=$1} END {print s+0}') || SKIPPED=0
+          TOTAL=$((PASSED + FAILED + SKIPPED))
+          echo "tests_passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "tests_failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "tests_skipped=$SKIPPED" >> $GITHUB_OUTPUT
+          echo "tests_total=$TOTAL" >> $GITHUB_OUTPUT
+          if [ "$FAILED" -gt 0 ]; then
+            exit 1
+          fi
 
       - name: Build release via Makefile
         run: make release
@@ -106,3 +152,29 @@ jobs:
           name: abyss-release-${{ matrix.os }}
           path: |
             ${{ runner.os == 'Windows' && 'target\\release\\abyss.exe' || 'target/release/abyss' }}
+      - name: Collect Build Metrics
+        id: collect-metrics
+        uses: ./.github/actions/ci-utils
+        with:
+          command: collect-metrics
+          os: ${{ matrix.os }}
+          runtime-version: stable
+          cache-hit: ${{ steps.cache-cargo-registry.outputs.cache-hit || 'false' }}
+          tests-total: ${{ steps.run-tests.outputs.tests_total || '0' }}
+          tests-passed: ${{ steps.run-tests.outputs.tests_passed || '0' }}
+          tests-failed: ${{ steps.run-tests.outputs.tests_failed || '0' }}
+
+  build-results:
+    name: Generate Summary
+    needs: [build, matrix-build]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Generate Build Summary
+        uses: ./.github/actions/ci-utils
+        with:
+          command: generate-summary
+          total-builds: ${{ needs.matrix-build.outputs.total_matrix_jobs || '0' }}

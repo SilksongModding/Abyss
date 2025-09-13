@@ -1,0 +1,20 @@
+name: "Install dependencies"
+description: "Action to install common CI dependencies (rustfmt, clippy, etc.)"
+
+runs:
+	using: "composite"
+	steps:
+		- if: runner.os != 'Windows'
+			name: Install rustfmt and clippy (Unix)
+			shell: bash
+			run: |
+				set -euo pipefail
+				echo "Installing rustfmt and clippy components"
+				rustup component add rustfmt clippy || true
+
+		- if: runner.os == 'Windows'
+			name: Install rustfmt and clippy (Windows)
+			shell: pwsh
+			run: |
+				Write-Host "Installing rustfmt and clippy components"
+				rustup component add rustfmt clippy
