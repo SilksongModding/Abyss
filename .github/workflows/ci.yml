@@ -79,6 +79,7 @@ jobs:
   matrix-build:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         rust: [stable, beta, nightly]
@@ -217,7 +218,7 @@ jobs:
       - name: Upload release artifact (per-OS)
         uses: actions/upload-artifact@v4
         with:
-          name: abyss-release-${{ matrix.os }}
+          name: abyss-release-${{ matrix.os }}-${{ matrix.rust }}
           path: |
             ${{ runner.os == 'Windows' && 'target\\release\\abyss.exe' || 'target/release/abyss' }}
       - name: Upload release log
@@ -230,6 +231,14 @@ jobs:
         with:
           name: test-results-${{ matrix.os }}-${{ matrix.rust }}
           path: test-results/results.xml
+      - name: Publish test results to GitHub UI
+        if: always()
+        uses: dorny/test-reporter@v1
+        with:
+          name: cargo-tests
+          path: test-results/results.xml
+          reporter: junit
+        continue-on-error: true
       - name: Upload cargo test JSON
         uses: actions/upload-artifact@v4
         with:
