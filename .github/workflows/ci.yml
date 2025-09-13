@@ -14,6 +14,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: stable
+      - name: Smoke-test Rust availability
+        run: |
+          rustc --version
+          cargo --version
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -57,11 +61,23 @@ jobs:
         uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: stable
+      - name: Smoke-test Rust availability (non-Windows)
+        if: runner.os != 'Windows'
+        run: |
+          rustc --version
+          cargo --version
       - name: Set up Rust (Windows)
         if: runner.os == 'Windows'
+        shell: bash
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-          source $HOME/.cargo/env
+          echo "CARGO_HOME=$HOME/.cargo" >> $GITHUB_ENV
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      - name: Smoke-test Rust availability (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          rustc --version
+          cargo --version
 
       - name: Cache cargo registry
         uses: actions/cache@v4
