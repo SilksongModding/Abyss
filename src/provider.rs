@@ -58,12 +58,10 @@ impl SteamProvider for RealSteamProvider {
             .context("Failed to locate Steam installation. Is Steam installed?")?;
 
         let mut out = Vec::new();
-        for lib_res in steam.libraries()? {
-            if let Ok(lib) = lib_res {
-                out.push(Library {
-                    path: lib.path().to_path_buf(),
-                });
-            }
+        for lib in (steam.libraries()?).flatten() {
+            out.push(Library {
+                path: lib.path().to_path_buf(),
+            });
         }
         Ok(out)
     }
