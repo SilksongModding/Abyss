@@ -151,10 +151,14 @@ mod tests {
         };
         let detector = Detector::new(provider);
 
-        std::env::set_var("ABYSS_GAME_DIR", dir.path());
+        unsafe {
+            std::env::set_var("ABYSS_GAME_DIR", dir.path());
+        }
         let got = detector.detect_game_dir(None, None, &[]).unwrap();
         assert_eq!(got, dir.path());
-        std::env::remove_var("ABYSS_GAME_DIR");
+        unsafe {
+            std::env::remove_var("ABYSS_GAME_DIR");
+        }
     }
 
     #[test]
