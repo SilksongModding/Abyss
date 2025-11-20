@@ -90,7 +90,7 @@ jobs:
           start_time=$(date +%s)
           
           # Run tests with JSON output for the parser
-          make test CARGO_FLAGS="-- --format=json -Z unstable-options --report-time" 2> cargo-test.json || true
+          make test CARGO_FLAGS="-- --format=json -Z unstable-options --report-time" > cargo-test.json || true
           
           end_time=$(date +%s)
           duration=$((end_time - start_time))

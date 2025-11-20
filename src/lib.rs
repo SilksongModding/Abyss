@@ -1,3 +1,4 @@
+pub mod bepinex;
 pub mod detector;
 pub mod provider;
 
