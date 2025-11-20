@@ -3,272 +3,173 @@ name: CI
 on:
   push:
     branches: ["main", "dev"]
+    tags: ["v*"]
   pull_request:
     branches: ["main", "dev"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
 jobs:
-  build:
+  # 1. Fast Check Job
+  check:
+    name: Check & Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Start Build Timer
-        uses: ./.github/actions/ci-utils
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          command: start-timer
-      - uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: stable
-      - name: Smoke-test Rust availability
-        run: |
-          rustc --version
-          cargo --version
-      - name: Cache cargo registry
+          components: rustfmt, clippy
+
+      - name: Cache Cargo
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+            target
+          key: ${{ runner.os }}-cargo-check-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-registry-
+            ${{ runner.os }}-cargo-check-
 
-      - name: Cache cargo target
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-target-
-      - name: Run clippy via Makefile
-        run: make clippy
-      - name: Run tests via Makefile
-        id: run-tests
-        run: |
-          set -o pipefail
-          # Run tests via Makefile and capture output
-          make test 2>&1 | tee build-output.log || true
-          # Try to extract test counts
-          PASSED=$(grep -Eo '([0-9]+) passed' build-output.log | awk '{s+=$1} END {print s+0}') || PASSED=0
-          FAILED=$(grep -Eo '([0-9]+) failed' build-output.log | awk '{s+=$1} END {print s+0}') || FAILED=0
-          SKIPPED=$(grep -Eo '([0-9]+) skipped' build-output.log | awk '{s+=$1} END {print s+0}') || SKIPPED=0
-          TOTAL=$((PASSED + FAILED + SKIPPED))
-          echo "tests_passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "tests_failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "tests_skipped=$SKIPPED" >> $GITHUB_OUTPUT
-          echo "tests_total=$TOTAL" >> $GITHUB_OUTPUT
-          if [ "$FAILED" -gt 0 ]; then
-            exit 1
-          fi
+      - name: Check Formatting
+        run: cargo fmt --all -- --check
 
-      - name: Build release via Makefile
-        run: |
-          set -o pipefail
-          make release 2>&1 | tee release-output.log
-          rc=${PIPESTATUS[0]}
-          if [ $rc -ne 0 ]; then
-            echo "Release build failed with exit code $rc"
-            exit $rc
-          fi
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Upload release artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: abyss-release
-          path: target/release/abyss
+      - name: Cargo Check
+        run: cargo check --all-targets --all-features
 
-  matrix-build:
+  # 2. Matrix Test Job
+  test:
+    name: Test (${{ matrix.os }} / ${{ matrix.rust }})
+    needs: check
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        rust: [stable, beta, nightly]
-    outputs:
-      total_matrix_jobs: ${{ strategy.job-total || 0 }}
+        rust: [stable, beta]
+        include:
+          - os: ubuntu-latest
+            rust: nightly
+    
     steps:
       - uses: actions/checkout@v4
-      - name: Start Build Timer
-        uses: ./.github/actions/ci-utils
-        with:
-          command: start-timer
-      - name: Set up Rust
-        if: runner.os != 'Windows'
-        uses: dtolnay/rust-toolchain@v1
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
-      - name: Smoke-test Rust availability (non-Windows)
-        if: runner.os != 'Windows'
-        run: |
-          rustc --version
-          cargo --version
-      - name: Set up Rust (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ matrix.rust }}
-          echo "CARGO_HOME=$HOME/.cargo" >> $GITHUB_ENV
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-      - name: Smoke-test Rust availability (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          rustc --version
-          cargo --version
 
-      - name: Install jq (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y jq
-        shell: bash
-
-      - name: Install jq (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew install jq || true
-        shell: bash
-
-      - name: Install jq (Windows)
-        if: runner.os == 'Windows'
-        run: choco install jq -y
-
-      - name: Cache cargo registry
-        id: cache-cargo-registry
+      - name: Cache Cargo
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+            target
+          key: ${{ runner.os }}-cargo-test-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-registry-
+            ${{ runner.os }}-cargo-test-${{ matrix.rust }}-
 
-      - name: Cache cargo target
-        id: cache-cargo-target
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-target-
-      - name: Install dependencies (if any)
-        uses: ./.github/actions/install-deps
-      - name: Run tests (cargo test harness JSON) and generate JUnit
-        id: run-tests
-        run: |
-          set -euo pipefail
-          # Run cargo test and request the test harness to emit JSON events
-          # The `-- --format=json` flag asks the test runner to output JSON test events
-          cargo test --all -- --format=json 2>&1 | tee cargo-test.json || true
-
-          # If cargo-test.json is empty or doesn't contain JSON lines, save it and fail gracefully
-          if [ ! -s cargo-test.json ]; then
-            echo "cargo-test.json is empty"
-          fi
-
-          # Use jq to filter only valid JSON lines to avoid parse errors
-          # Create a sanitized file with only lines that are valid JSON objects
-          awk 'BEGIN{count=0} { line=$0; if (match(line, /^[[:space:]]*\{/)) print line }' cargo-test.json > cargo-test-sanitized.json || true
-
-          PASSED=$(jq -r 'select(.event=="ok") | .name' cargo-test-sanitized.json 2>/dev/null | wc -l || true)
-          FAILED=$(jq -r 'select(.event=="failed") | .name' cargo-test-sanitized.json 2>/dev/null | wc -l || true)
-          IGNORED=$(jq -r 'select(.event=="ignored") | .name' cargo-test-sanitized.json 2>/dev/null | wc -l || true)
-          TOTAL=$((PASSED + FAILED + IGNORED))
-
-          # Write outputs
-          echo "tests_passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "tests_failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "tests_skipped=$IGNORED" >> $GITHUB_OUTPUT
-          echo "tests_total=$TOTAL" >> $GITHUB_OUTPUT
-
-          # Produce a minimal JUnit XML
-          mkdir -p test-results
-          echo "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" > test-results/results.xml
-          echo "<testsuites>" >> test-results/results.xml
-          echo "  <testsuite name=\"cargo-tests\" tests=\"$TOTAL\" failures=\"$FAILED\" skipped=\"$IGNORED\">" >> test-results/results.xml
-
-          jq -c '{name: .name, event: .event, exec_time: .exec_time} | select(.name != null)' cargo-test-sanitized.json 2>/dev/null | while read -r line; do
-            name=$(jq -r '.name' <<<"$line")
-            event=$(jq -r '.event' <<<"$line")
-            time=$(jq -r '.exec_time // 0' <<<"$line")
-            if [ "$event" = "ok" ]; then
-              echo "    <testcase name=\"${name}\" time=\"${time}\"/>" >> test-results/results.xml
-            elif [ "$event" = "failed" ]; then
-              echo "    <testcase name=\"${name}\" time=\"${time}\">" >> test-results/results.xml
-              echo "      <failure/>" >> test-results/results.xml
-              echo "    </testcase>" >> test-results/results.xml
-            elif [ "$event" = "ignored" ]; then
-              echo "    <testcase name=\"${name}\" time=\"${time}\">" >> test-results/results.xml
-              echo "      <skipped/>" >> test-results/results.xml
-              echo "    </testcase>" >> test-results/results.xml
-            fi
-          done
-
-          echo "  </testsuite>" >> test-results/results.xml
-          echo "</testsuites>" >> test-results/results.xml
-
-          # Fail if any test failed
-          if [ "$FAILED" -gt 0 ]; then
-            exit 1
-          fi
+      - name: Run Tests
         shell: bash
+        run: |
+          # Run tests with JSON output for the parser
+          make test CARGO_FLAGS="-- --format=json -Z unstable-options --report-time" 2> cargo-test.json || true
+          
+          # Process results
+          export GENERATE_METRICS=true
+          export MATRIX_OS="${{ matrix.os }}"
+          export MATRIX_RUST="${{ matrix.rust }}"
+          export JOB_STATUS="success"
+          
+          python3 scripts/process_tests.py cargo-test.json
 
-      - name: Build release via Makefile
-        run: make release
-
-      - name: Upload release artifact (per-OS)
+      - name: Upload Test Results
         uses: actions/upload-artifact@v4
-        with:
-          name: abyss-release-${{ matrix.os }}-${{ matrix.rust }}
-          path: |
-            ${{ runner.os == 'Windows' && 'target\\release\\abyss.exe' || 'target/release/abyss' }}
-      - name: Upload release log
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-log-${{ matrix.os }}-${{ matrix.rust }}
-          path: release-output.log
-      - name: Upload test results (JUnit)
-        uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: test-results-${{ matrix.os }}-${{ matrix.rust }}
           path: test-results/results.xml
-      - name: Publish test results to GitHub UI
+
+      - name: Upload Metrics
+        uses: actions/upload-artifact@v4
         if: always()
-        uses: dorny/test-reporter@v1
         with:
-          name: cargo-tests
-          path: test-results/results.xml
-          reporter: junit
-        continue-on-error: true
-      - name: Upload cargo test JSON
+          name: metric-${{ matrix.os }}-${{ matrix.rust }}
+          path: test-metrics.json
+
+  # 3. Build Release Job
+  build:
+    name: Build Release (${{ matrix.os }})
+    needs: check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-
+
+      - name: Build Release
+        run: make release
+
+      - name: Upload Artifact (Unix)
+        if: runner.os != 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: cargo-test-json-${{ matrix.os }}-${{ matrix.rust }}
-          path: |
-            cargo-test.json
-            cargo-test-sanitized.json
-      - name: Collect Build Metrics
-        id: collect-metrics
-        uses: ./.github/actions/ci-utils
-        with:
-          command: collect-metrics
-          os: ${{ matrix.os }}
-          runtime-version: ${{ matrix.rust }}
-          cache-hit: ${{ (steps.cache-cargo-registry.outputs.cache-hit == 'true') || (steps.cache-cargo-target.outputs.cache-hit == 'true') }}
-          tests-total: ${{ steps.run-tests.outputs.tests_total || '0' }}
-          tests-passed: ${{ steps.run-tests.outputs.tests_passed || '0' }}
-          tests-failed: ${{ steps.run-tests.outputs.tests_failed || '0' }}
+          name: abyss-${{ matrix.os }}
+          path: target/release/abyss
 
-  build-results:
-    name: Generate Summary
-    needs: [build, matrix-build]
+      - name: Upload Artifact (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: abyss-${{ matrix.os }}
+          path: target/release/abyss.exe
+
+  # 4. Release Job (Only on tags)
+  release:
+    name: Create Release
+    needs: [test, build]
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
-    if: always()
+    permissions:
+      contents: write
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Generate Build Summary
-        uses: ./.github/actions/ci-utils
+      - uses: actions/download-artifact@v4
         with:
-          command: generate-summary
-          total-builds: ${{ needs.matrix-build.outputs.total_matrix_jobs || '0' }}
+          pattern: abyss-*
+          merge-multiple: true
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/*
+          generate_release_notes: true

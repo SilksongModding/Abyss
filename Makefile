@@ -38,7 +38,7 @@ uninstall:
 	cargo uninstall abyss || true
 
 test:
-	cargo test
+	cargo test $(CARGO_FLAGS)
 
 integration-test:
 	# This target will run the optional integration test that exercises steamlocate.
