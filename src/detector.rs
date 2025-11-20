@@ -1,7 +1,7 @@
 use crate::provider::SteamProvider;
 use anyhow::Result;
 use std::{
-    env, fs,
+    fs,
     path::{Path, PathBuf},
 };
 use tracing::warn;
@@ -38,21 +38,13 @@ impl<P: SteamProvider> Detector<P> {
     /// Detects the game dir following the documented precedence
     pub fn detect_game_dir(
         &self,
-        cli_override: Option<&Path>,
+        explicit_dir: Option<&Path>,
         app_id: Option<u32>,
         extra_hints: &[String],
     ) -> Result<PathBuf> {
-        // 1) CLI override
-        if let Some(p) = cli_override {
+        // 1) Explicit override (CLI or Env)
+        if let Some(p) = explicit_dir {
             return ensure_dir(p);
-        }
-
-        // 2) Env var
-        if let Ok(env_path) = env::var("ABYSS_GAME_DIR") {
-            let p = PathBuf::from(env_path);
-            if let Ok(valid) = ensure_dir(&p) {
-                return Ok(valid);
-            }
         }
 
         // 3a/3b) by app id via provider
@@ -129,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_override_wins() {
+    fn explicit_override_wins() {
         let dir = tempdir().unwrap();
         let provider = FakeProvider {
             app: None,
@@ -142,20 +134,7 @@ mod tests {
         assert_eq!(got, dir.path());
     }
 
-    #[test]
-    fn env_var_used_when_no_cli() {
-        let dir = tempdir().unwrap();
-        let provider = FakeProvider {
-            app: None,
-            libs: vec![],
-        };
-        let detector = Detector::new(provider);
 
-        unsafe { std::env::set_var("ABYSS_GAME_DIR", dir.path()) };
-        let got = detector.detect_game_dir(None, None, &[]).unwrap();
-        assert_eq!(got, dir.path());
-        unsafe { std::env::remove_var("ABYSS_GAME_DIR") };
-    }
 
     #[test]
     fn finds_by_app_id_from_provider() {
