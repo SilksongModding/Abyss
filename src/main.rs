@@ -6,8 +6,9 @@ mod detector;
 
 mod bepinex;
 mod provider;
+
 use bepinex::BepInExInstallation;
-use detector::Detector;
+use detector::{Detector, SILKSONG_APP_ID};
 use provider::RealSteamProvider;
 
 // SILKSONG_APP_ID is available from the library crate root
@@ -48,16 +49,31 @@ enum Commands {
 
     /// Check if BepInEx is correctly installed
     Check {
-        /// Manual override of the game directory
-        #[arg(long, value_name = "PATH")]
+        /// Path to the game directory. If not provided, the tool will try to find it.
+        #[arg(long, short)]
         game_dir: Option<PathBuf>,
 
-        /// Optional Steam AppID (for debugging)
-        #[arg(long, value_name = "APPID")]
-        app_id: Option<u32>,
+        /// Steam App ID to use for detection
+        #[arg(long, default_value_t = SILKSONG_APP_ID)]
+        app_id: u32,
 
-        /// Extra folder name hints to search under steamapps/common
-        #[arg(long = "name-hint", value_name = "NAME", num_args = 0.., action = clap::ArgAction::Append)]
+        /// Name hints to use for detection
+        #[arg(long, value_delimiter = ',', num_args = 1..)]
+        name_hints: Vec<String>,
+    },
+
+    /// Download and install the latest BepInEx release
+    Install {
+        /// Path to the game directory. If not provided, the tool will try to find it.
+        #[arg(long, short)]
+        game_dir: Option<PathBuf>,
+
+        /// Steam App ID to use for detection
+        #[arg(long, default_value_t = SILKSONG_APP_ID)]
+        app_id: u32,
+
+        /// Name hints to use for detection
+        #[arg(long, value_delimiter = ',', num_args = 1..)]
         name_hints: Vec<String>,
     },
 }
@@ -101,7 +117,7 @@ fn main() {
             let detector = Detector::new(RealSteamProvider);
             let env_dir = std::env::var("ABYSS_GAME_DIR").ok().map(PathBuf::from);
             let effective_dir = game_dir.or(env_dir);
-            let path = match detector.detect_game_dir(effective_dir.as_deref(), app_id, &name_hints)
+            let path = match detector.detect_game_dir(effective_dir.as_deref(), Some(app_id), &name_hints)
             {
                 Ok(p) => p,
                 Err(e) => {
@@ -134,6 +150,45 @@ fn main() {
                 }
                 Err(e) => {
                     error!("Failed to check BepInEx installation: {:#}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::Install {
+            game_dir,
+            app_id,
+            name_hints,
+        } => {
+            let detector = Detector::new(RealSteamProvider);
+            let env_dir = std::env::var("ABYSS_GAME_DIR").ok().map(PathBuf::from);
+            let effective_dir = game_dir.or(env_dir);
+            let path = match detector.detect_game_dir(effective_dir.as_deref(), Some(app_id), &name_hints)
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    error!("Could not detect game directory: {:#}", e);
+                    std::process::exit(1);
+                }
+            };
+
+            info!("Found game directory at {}", path.display());
+
+            match abyss::installer::download_bepinex() {
+                Ok((zip_path, version)) => {
+                    info!("Downloaded BepInEx {} to {}", version, zip_path.display());
+                    if let Err(e) = abyss::installer::install_bepinex(&zip_path, &path) {
+                        error!("Failed to install BepInEx: {:#}", e);
+                        // Cleanup temp file if possible, but it's a temp file so OS handles it eventually?
+                        // We kept it, so we should probably remove it.
+                        let _ = std::fs::remove_file(zip_path);
+                        std::process::exit(1);
+                    }
+                    info!("Successfully installed BepInEx {}!", version);
+                    // Cleanup
+                    let _ = std::fs::remove_file(zip_path);
+                }
+                Err(e) => {
+                    error!("Failed to download BepInEx: {:#}", e);
                     std::process::exit(1);
                 }
             }
