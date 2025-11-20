@@ -33,7 +33,7 @@ fn test_install_bepinex_extracts_files() {
     // 3. Verify files exist in game_dir
     assert!(game_dir.join("BepInEx/core/BepInEx.dll").exists());
     assert!(game_dir.join("doorstop_config.ini").exists());
-    
+
     let dll_content = fs::read(game_dir.join("BepInEx/core/BepInEx.dll")).unwrap();
     assert_eq!(dll_content, b"fake dll content");
 }

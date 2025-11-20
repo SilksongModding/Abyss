@@ -117,14 +117,15 @@ fn main() {
             let detector = Detector::new(RealSteamProvider);
             let env_dir = std::env::var("ABYSS_GAME_DIR").ok().map(PathBuf::from);
             let effective_dir = game_dir.or(env_dir);
-            let path = match detector.detect_game_dir(effective_dir.as_deref(), Some(app_id), &name_hints)
-            {
-                Ok(p) => p,
-                Err(e) => {
-                    error!("Could not detect game directory: {:#}", e);
-                    std::process::exit(1);
-                }
-            };
+            let path =
+                match detector.detect_game_dir(effective_dir.as_deref(), Some(app_id), &name_hints)
+                {
+                    Ok(p) => p,
+                    Err(e) => {
+                        error!("Could not detect game directory: {:#}", e);
+                        std::process::exit(1);
+                    }
+                };
 
             match BepInExInstallation::check(&path) {
                 Ok(install) => {
@@ -162,14 +163,15 @@ fn main() {
             let detector = Detector::new(RealSteamProvider);
             let env_dir = std::env::var("ABYSS_GAME_DIR").ok().map(PathBuf::from);
             let effective_dir = game_dir.or(env_dir);
-            let path = match detector.detect_game_dir(effective_dir.as_deref(), Some(app_id), &name_hints)
-            {
-                Ok(p) => p,
-                Err(e) => {
-                    error!("Could not detect game directory: {:#}", e);
-                    std::process::exit(1);
-                }
-            };
+            let path =
+                match detector.detect_game_dir(effective_dir.as_deref(), Some(app_id), &name_hints)
+                {
+                    Ok(p) => p,
+                    Err(e) => {
+                        error!("Could not detect game directory: {:#}", e);
+                        std::process::exit(1);
+                    }
+                };
 
             info!("Found game directory at {}", path.display());
 

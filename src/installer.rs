@@ -49,7 +49,9 @@ pub fn download_bepinex() -> Result<(PathBuf, String)> {
                 return download_bepinex_scrape(&client);
             }
 
-            let resp = resp.error_for_status().context("GitHub API returned error")?;
+            let resp = resp
+                .error_for_status()
+                .context("GitHub API returned error")?;
             let release: Release = resp.json().context("Failed to parse release JSON")?;
             info!("Latest version: {}", release.tag_name);
 
@@ -64,18 +66,25 @@ pub fn download_bepinex() -> Result<(PathBuf, String)> {
             let asset = release
                 .assets
                 .iter()
-                .find(|a| a.name.contains(os_keyword) && a.name.contains("x64") && a.name.ends_with(".zip"))
+                .find(|a| {
+                    a.name.contains(os_keyword)
+                        && a.name.contains("x64")
+                        && a.name.ends_with(".zip")
+                })
                 .or_else(|| {
                     // Fallback to just x64 if specific OS not found (e.g. maybe just "unix" or generic)
-                    release.assets.iter().find(|a| a.name.contains("x64") && a.name.ends_with(".zip"))
+                    release
+                        .assets
+                        .iter()
+                        .find(|a| a.name.contains("x64") && a.name.ends_with(".zip"))
                 })
                 .context("Could not find a suitable x64 zip asset in the latest release")?;
 
             download_file(&client, &asset.browser_download_url, &release.tag_name)
         }
         Err(_) => {
-             info!("Failed to connect to GitHub API. Falling back to web scraping...");
-             download_bepinex_scrape(&client)
+            info!("Failed to connect to GitHub API. Falling back to web scraping...");
+            download_bepinex_scrape(&client)
         }
     }
 }
@@ -87,24 +96,27 @@ fn download_bepinex_scrape(client: &Client) -> Result<(PathBuf, String)> {
         .send()
         .context("Failed to fetch latest release page")?
         .error_for_status()?;
-    
+
     let final_url = resp.url().as_str();
     let tag_name = final_url
         .split('/')
         .last()
         .context("Failed to extract tag name from URL")?
         .to_string();
-    
+
     info!("Latest version (scraped): {}", tag_name);
 
     // 2. Fetch expanded assets
-    let assets_url = format!("https://github.com/BepInEx/BepInEx/releases/expanded_assets/{}", tag_name);
+    let assets_url = format!(
+        "https://github.com/BepInEx/BepInEx/releases/expanded_assets/{}",
+        tag_name
+    );
     let resp = client
         .get(&assets_url)
         .send()
         .context("Failed to fetch assets page")?
         .error_for_status()?;
-    
+
     let html = resp.text().context("Failed to read assets page HTML")?;
 
     // 3. Find asset link
@@ -119,14 +131,14 @@ fn download_bepinex_scrape(client: &Client) -> Result<(PathBuf, String)> {
     // Simple string parsing to find the link
     // Looking for href="/BepInEx/BepInEx/releases/download/TAG/FILENAME"
     // We want FILENAME to contain os_keyword and x64 and end in .zip
-    
+
     let pattern = format!("href=\"/BepInEx/BepInEx/releases/download/{}/", tag_name);
     for line in html.lines() {
         if let Some(idx) = line.find(&pattern) {
             let start = idx + 6; // skip href="
             let end = line[start..].find('"').unwrap_or(line.len());
-            let path = &line[start..start+end];
-            
+            let path = &line[start..start + end];
+
             if path.contains(os_keyword) && path.contains("x64") && path.ends_with(".zip") {
                 let download_url = format!("https://github.com{}", path);
                 return download_file(client, &download_url, &tag_name);
@@ -139,8 +151,8 @@ fn download_bepinex_scrape(client: &Client) -> Result<(PathBuf, String)> {
         if let Some(idx) = line.find(&pattern) {
             let start = idx + 6;
             let end = line[start..].find('"').unwrap_or(line.len());
-            let path = &line[start..start+end];
-            
+            let path = &line[start..start + end];
+
             if path.contains("x64") && path.ends_with(".zip") {
                 let download_url = format!("https://github.com{}", path);
                 return download_file(client, &download_url, &tag_name);
@@ -148,7 +160,9 @@ fn download_bepinex_scrape(client: &Client) -> Result<(PathBuf, String)> {
         }
     }
 
-    Err(anyhow::anyhow!("Could not find a suitable x64 zip asset via scraping"))
+    Err(anyhow::anyhow!(
+        "Could not find a suitable x64 zip asset via scraping"
+    ))
 }
 
 fn download_file(client: &Client, url: &str, version: &str) -> Result<(PathBuf, String)> {
@@ -163,7 +177,7 @@ fn download_file(client: &Client, url: &str, version: &str) -> Result<(PathBuf, 
     io::copy(&mut resp, &mut temp_file).context("Failed to write to temp file")?;
 
     let (_file, path) = temp_file.keep().context("Failed to persist temp file")?;
-    
+
     Ok((path, version.to_string()))
 }
 
