@@ -13,7 +13,7 @@ pub struct BepInExInstallation {
 impl BepInExInstallation {
     pub fn check(game_dir: &Path) -> Result<Self> {
         let bepinex_dir = game_dir.join(BEPINEX_DIR_NAME);
-        
+
         if !bepinex_dir.exists() || !bepinex_dir.is_dir() {
             return Ok(Self {
                 root_dir: bepinex_dir,
@@ -37,5 +37,3 @@ impl BepInExInstallation {
         })
     }
 }
-
-

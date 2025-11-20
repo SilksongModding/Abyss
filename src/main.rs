@@ -4,11 +4,11 @@ use std::path::PathBuf;
 use tracing::{Level, error, info};
 mod detector;
 
-mod provider;
 mod bepinex;
+mod provider;
+use bepinex::BepInExInstallation;
 use detector::Detector;
 use provider::RealSteamProvider;
-use bepinex::BepInExInstallation;
 
 // SILKSONG_APP_ID is available from the library crate root
 
@@ -101,7 +101,8 @@ fn main() {
             let detector = Detector::new(RealSteamProvider);
             let env_dir = std::env::var("ABYSS_GAME_DIR").ok().map(PathBuf::from);
             let effective_dir = game_dir.or(env_dir);
-            let path = match detector.detect_game_dir(effective_dir.as_deref(), app_id, &name_hints) {
+            let path = match detector.detect_game_dir(effective_dir.as_deref(), app_id, &name_hints)
+            {
                 Ok(p) => p,
                 Err(e) => {
                     error!("Could not detect game directory: {:#}", e);
@@ -112,12 +113,21 @@ fn main() {
             match BepInExInstallation::check(&path) {
                 Ok(install) => {
                     if install.is_valid {
-                        info!("BepInEx is correctly installed at {}", install.root_dir.display());
+                        info!(
+                            "BepInEx is correctly installed at {}",
+                            install.root_dir.display()
+                        );
                     } else {
                         if !install.root_dir.exists() {
-                            error!("BepInEx folder not found in game directory: {}", path.display());
+                            error!(
+                                "BepInEx folder not found in game directory: {}",
+                                path.display()
+                            );
                         } else {
-                            error!("BepInEx installation is missing subfolders: {:?}", install.missing_subfolders);
+                            error!(
+                                "BepInEx installation is missing subfolders: {:?}",
+                                install.missing_subfolders
+                            );
                         }
                         std::process::exit(1);
                     }

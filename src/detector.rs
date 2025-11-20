@@ -97,5 +97,3 @@ impl<P: SteamProvider> Detector<P> {
         )
     }
 }
-
-

@@ -3,7 +3,6 @@ use abyss::provider::{App, Library, SteamProvider};
 use anyhow::Result;
 use tempfile::tempdir;
 
-
 struct FakeProvider {
     app: Option<(App, Library)>,
     libs: Vec<Library>,

@@ -1,6 +1,6 @@
 use abyss::bepinex::{BepInExInstallation, REQUIRED_SUBFOLDERS};
-use tempfile::tempdir;
 use std::fs;
+use tempfile::tempdir;
 
 #[test]
 fn test_missing_bepinex_folder() {
