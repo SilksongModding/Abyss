@@ -252,7 +252,7 @@ jobs:
         with:
           command: collect-metrics
           os: ${{ matrix.os }}
-          runtime-version: stable
+          runtime-version: ${{ matrix.rust }}
           cache-hit: ${{ (steps.cache-cargo-registry.outputs.cache-hit == 'true') || (steps.cache-cargo-target.outputs.cache-hit == 'true') }}
           tests-total: ${{ steps.run-tests.outputs.tests_total || '0' }}
           tests-passed: ${{ steps.run-tests.outputs.tests_passed || '0' }}
