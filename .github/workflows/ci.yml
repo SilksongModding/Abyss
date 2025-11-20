@@ -72,6 +72,7 @@ jobs:
           toolchain: ${{ matrix.rust }}
 
       - name: Cache Cargo
+        id: cache-cargo
         uses: actions/cache@v4
         with:
           path: |
@@ -84,15 +85,23 @@ jobs:
 
       - name: Run Tests
         shell: bash
+        id: run-tests
         run: |
+          start_time=$(date +%s)
+          
           # Run tests with JSON output for the parser
           make test CARGO_FLAGS="-- --format=json -Z unstable-options --report-time" 2> cargo-test.json || true
+          
+          end_time=$(date +%s)
+          duration=$((end_time - start_time))
           
           # Process results
           export GENERATE_METRICS=true
           export MATRIX_OS="${{ matrix.os }}"
           export MATRIX_RUST="${{ matrix.rust }}"
           export JOB_STATUS="success"
+          export DURATION="$duration"
+          export CACHE_HIT="${{ steps.cache-cargo.outputs.cache-hit }}"
           
           python3 scripts/process_tests.py cargo-test.json
 
@@ -126,6 +135,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo
+        id: cache-cargo
         uses: actions/cache@v4
         with:
           path: |
@@ -137,7 +147,31 @@ jobs:
             ${{ runner.os }}-cargo-build-
 
       - name: Build Release
-        run: make release
+        shell: bash
+        run: |
+          start_time=$(date +%s)
+          make release
+          end_time=$(date +%s)
+          duration=$((end_time - start_time))
+          
+          # Calculate size
+          if [ "${{ runner.os }}" == "Windows" ]; then
+            size=$(stat -c%s target/release/abyss.exe || echo 0)
+          else
+            size=$(stat -f%z target/release/abyss || stat -c%s target/release/abyss || echo 0)
+          fi
+          
+          # Generate metric JSON
+          cat <<EOF > build-metric-${{ matrix.os }}.json
+          {
+            "os": "${{ matrix.os }}",
+            "runtime": "stable",
+            "status": "success",
+            "duration": $duration,
+            "size_bytes": $size,
+            "cache_hit": ${{ steps.cache-cargo.outputs.cache-hit == 'true' }}
+          }
+          EOF
 
       - name: Upload Artifact (Unix)
         if: runner.os != 'Windows'
@@ -152,8 +186,34 @@ jobs:
         with:
           name: abyss-${{ matrix.os }}
           path: target/release/abyss.exe
+          
+      - name: Upload Metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: metric-${{ matrix.os }}-build
+          path: build-metric-${{ matrix.os }}.json
 
-  # 4. Release Job (Only on tags)
+  # 4. Summary Job
+  summary:
+    name: Generate Summary
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download Metrics
+        uses: actions/download-artifact@v4
+        with:
+          pattern: metric-*
+          merge-multiple: true
+          path: metrics
+          
+      - name: Generate Summary
+        run: |
+          python3 scripts/generate_summary.py >> $GITHUB_STEP_SUMMARY
+
+  # 5. Release Job (Only on tags)
   release:
     name: Create Release
     needs: [test, build]

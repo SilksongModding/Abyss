@@ -78,6 +78,8 @@ def generate_metrics_json(results, output_file):
         "tests_passed": results['passed'],
         "tests_failed": results['failed'],
         "tests_skipped": results['ignored'],
+        "duration": int(os.environ.get('DURATION', 0)),
+        "cache_hit": os.environ.get('CACHE_HIT') == 'true',
         "timestamp": datetime.utcnow().isoformat()
     }
     
