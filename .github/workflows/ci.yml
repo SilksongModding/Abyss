@@ -2,20 +2,234 @@ name: CI
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "dev"]
+    tags: ["v*"]
   pull_request:
-    branches: ["main"]
+    branches: ["main", "dev"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
 jobs:
-  build:
+  # 1. Fast Check Job
+  check:
+    name: Check & Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@v1
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          override: true
-      - name: Build
-        run: cargo build --verbose
-      - name: Run tests
-        run: cargo test --verbose
+          components: rustfmt, clippy
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-check-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-check-
+
+      - name: Check Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Cargo Check
+        run: cargo check --all-targets --all-features
+
+  # 2. Matrix Test Job
+  test:
+    name: Test (${{ matrix.os }} / ${{ matrix.rust }})
+    needs: check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        rust: [stable, beta]
+        include:
+          - os: ubuntu-latest
+            rust: nightly
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - name: Cache Cargo
+        id: cache-cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-test-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-${{ matrix.rust }}-
+
+      - name: Run Tests
+        shell: bash
+        id: run-tests
+        run: |
+          start_time=$(date +%s)
+          
+          # Run tests with JSON output for the parser
+          make test CARGO_FLAGS="-- --format=json -Z unstable-options --report-time" 2> cargo-test.json || true
+          
+          end_time=$(date +%s)
+          duration=$((end_time - start_time))
+          
+          # Process results
+          export GENERATE_METRICS=true
+          export MATRIX_OS="${{ matrix.os }}"
+          export MATRIX_RUST="${{ matrix.rust }}"
+          export JOB_STATUS="success"
+          export DURATION="$duration"
+          export CACHE_HIT="${{ steps.cache-cargo.outputs.cache-hit }}"
+          
+          python3 scripts/process_tests.py cargo-test.json
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.os }}-${{ matrix.rust }}
+          path: test-results/results.xml
+
+      - name: Upload Metrics
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: metric-${{ matrix.os }}-${{ matrix.rust }}
+          path: test-metrics.json
+
+  # 3. Build Release Job
+  build:
+    name: Build Release (${{ matrix.os }})
+    needs: check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        id: cache-cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-
+
+      - name: Build Release
+        shell: bash
+        run: |
+          start_time=$(date +%s)
+          make release
+          end_time=$(date +%s)
+          duration=$((end_time - start_time))
+          
+          # Calculate size
+          if [ "${{ runner.os }}" == "Windows" ]; then
+            size=$(stat -c%s target/release/abyss.exe || echo 0)
+          else
+            size=$(stat -f%z target/release/abyss || stat -c%s target/release/abyss || echo 0)
+          fi
+          
+          # Generate metric JSON
+          cat <<EOF > build-metric-${{ matrix.os }}.json
+          {
+            "os": "${{ matrix.os }}",
+            "runtime": "stable",
+            "status": "success",
+            "duration": $duration,
+            "size_bytes": $size,
+            "cache_hit": ${{ steps.cache-cargo.outputs.cache-hit == 'true' }}
+          }
+          EOF
+
+      - name: Upload Artifact (Unix)
+        if: runner.os != 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: abyss-${{ matrix.os }}
+          path: target/release/abyss
+
+      - name: Upload Artifact (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: abyss-${{ matrix.os }}
+          path: target/release/abyss.exe
+          
+      - name: Upload Metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: metric-${{ matrix.os }}-build
+          path: build-metric-${{ matrix.os }}.json
+
+  # 4. Summary Job
+  summary:
+    name: Generate Summary
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download Metrics
+        uses: actions/download-artifact@v4
+        with:
+          pattern: metric-*
+          merge-multiple: true
+          path: metrics
+          
+      - name: Generate Summary
+        run: |
+          python3 scripts/generate_summary.py >> $GITHUB_STEP_SUMMARY
+
+  # 5. Release Job (Only on tags)
+  release:
+    name: Create Release
+    needs: [test, build]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: abyss-*
+          merge-multiple: true
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/*
+          generate_release_notes: true

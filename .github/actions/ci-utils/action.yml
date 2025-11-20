@@ -1,0 +1,237 @@
+name: "CI Utilities"
+description: "Utilities for CI including timing, metrics collection and summaries"
+
+inputs:
+  command:
+    description: "Command to execute (start-timer, collect-metrics or generate-summary)"
+    required: true
+  os:
+    description: "Operating system"
+    required: false
+  runtime-version:
+    description: "Runtime or language version (python, ocaml, etc)"
+    required: false
+  cache-hit:
+    description: "Cache hit status"
+    required: false
+    default: "false"
+  total-builds:
+    description: "Total number of builds"
+    required: false
+    default: "0"
+  tests-total:
+    description: "Total number of tests"
+    required: false
+    default: "0"
+  tests-passed:
+    description: "Number of passed tests"
+    required: false
+    default: "0"
+  tests-failed:
+    description: "Number of failed tests"
+    required: false
+    default: "0"
+  tests-skipped:
+    description: "Number of skipped tests"
+    required: false
+    default: "0"
+
+outputs:
+  metric:
+    description: "Build metric in JSON format"
+    value: ${{ steps.collect.outputs.metric }}
+
+runs:
+  using: "composite"
+  steps:
+    # Timer Start
+    - if: inputs.command == 'start-timer'
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: |
+        ${{ runner.os == 'Windows' && '
+          $startTime = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+          "start_time=$startTime" | Out-File -FilePath $env:GITHUB_ENV -Append
+        ' || 'echo "start_time=$(date +%s)" >> $GITHUB_ENV' }}
+
+    # Metrics Collection
+    - if: inputs.command == 'collect-metrics'
+      id: collect
+      shell: bash
+      run: |
+        end_time=$(date +%s)
+        BUILD_TIME=$((end_time - start_time))
+
+        SIZE_BYTES=0
+        if [ -d "distribution" ]; then
+          if [ "$(uname)" = "Darwin" ]; then
+            SIZE_BYTES=$(find distribution -type f -exec stat -f %z {} \; 2>/dev/null | awk "{sum += \$1} END {print sum}" || echo "0")
+          else
+            SIZE_BYTES=$(du -sb distribution 2>/dev/null | cut -f1 || echo "0")
+          fi
+        fi
+
+        # Ensure all test values are numeric and safe
+        TESTS_TOTAL=$(echo "${TESTS_TOTAL}" | grep -E '^[0-9]+$' 2>/dev/null || echo "0")
+        TESTS_PASSED=$(echo "${TESTS_PASSED}" | grep -E '^[0-9]+$' 2>/dev/null || echo "0")
+        TESTS_FAILED=$(echo "${TESTS_FAILED}" | grep -E '^[0-9]+$' 2>/dev/null || echo "0")
+        TESTS_SKIPPED=$(echo "${TESTS_SKIPPED}" | grep -E '^[0-9]+$' 2>/dev/null || echo "0")
+
+        # Fix cache_hit to be proper boolean
+        if [ "$CACHE_HIT" = "true" ]; then
+          CACHE_HIT_JSON="true"
+        else
+          CACHE_HIT_JSON="false"
+        fi
+
+        # Build JSON safely using heredoc
+        cat > "metric-${OS_NAME}-${RUNTIME_VERSION}.json" << EOF
+        {
+          "os": "${OS_NAME}",
+          "runtime": "${RUNTIME_VERSION}",
+          "duration": ${BUILD_TIME},
+          "status": "${JOB_STATUS}",
+          "cache_hit": ${CACHE_HIT_JSON},
+          "size_bytes": ${SIZE_BYTES},
+          "tests_total": ${TESTS_TOTAL},
+          "tests_passed": ${TESTS_PASSED},
+          "tests_failed": ${TESTS_FAILED},
+          "tests_skipped": ${TESTS_SKIPPED}
+        }
+        EOF
+
+        # Validate JSON and set output
+        if jq . "metric-${OS_NAME}-${RUNTIME_VERSION}.json" > /dev/null 2>&1; then
+          metric=$(cat "metric-${OS_NAME}-${RUNTIME_VERSION}.json" | tr -d '\n')
+          echo "metric=$metric" >> $GITHUB_OUTPUT
+        else
+          echo "ERROR: Failed to create valid JSON metric" >> $GITHUB_STEP_SUMMARY
+          # Create minimal fallback
+          echo 'metric={"os":"'${OS_NAME}'","runtime":"'${RUNTIME_VERSION}'","status":"'${JOB_STATUS}'"}' >> $GITHUB_OUTPUT
+        fi
+      env:
+        OS_NAME: ${{ inputs.os }}
+        RUNTIME_VERSION: ${{ inputs.runtime-version }}
+        JOB_STATUS: ${{ job.status }}
+        CACHE_HIT: ${{ inputs.cache-hit }}
+        TESTS_TOTAL: ${{ inputs.tests-total }}
+        TESTS_PASSED: ${{ inputs.tests-passed }}
+        TESTS_FAILED: ${{ inputs.tests-failed }}
+        TESTS_SKIPPED: ${{ inputs.tests-skipped }}
+
+    # Upload Metrics
+    - if: inputs.command == 'collect-metrics'
+      uses: actions/upload-artifact@v4
+      with:
+        name: metric-${{ inputs.os }}-${{ inputs.runtime-version }}
+        path: metric-${{ inputs.os }}-${{ inputs.runtime-version }}.json
+
+    # Summary Generation
+    - if: inputs.command == 'generate-summary'
+      uses: actions/download-artifact@v4
+      with:
+        pattern: metric-*
+        merge-multiple: true
+        path: metrics
+
+    - if: inputs.command == 'generate-summary'
+      shell: bash
+      run: |
+        set +e
+        mkdir -p metrics
+
+        echo "# 🔨 CI Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+
+        branch="${GITHUB_REF#refs/*/}"
+        if [[ $GITHUB_REF == refs/pull/* ]]; then
+          PR_NUM=$(echo $branch | cut -d/ -f1)
+          echo "Pull Request: [#$PR_NUM](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/$PR_NUM)" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "Branch: \`$branch\`" >> $GITHUB_STEP_SUMMARY
+        fi
+
+        echo "Commit: [\`${GITHUB_SHA:0:7}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/$GITHUB_SHA)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 📈 Build Results Statistics" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| OS | Runtime | Status | <abbr title=\"pass+skip/total\">Tests</abbr> | Duration | Cache | Size |" >> $GITHUB_STEP_SUMMARY
+        echo "|------------|----------------|:---------:|:---------:|-----------:|:--------:|---------|" >> $GITHUB_STEP_SUMMARY
+
+        find metrics -name "metric-*.json" -type f | while read -r f; do
+          if [ ! -f "$f" ]; then continue; fi
+
+          if ! jq -e . >/dev/null 2>&1 <<<"$(cat "$f")"; then
+            echo "Warning: Invalid JSON in $f" >&2
+            continue
+          fi
+
+          # Process metrics
+          os=$(jq -r '.os' "$f")
+          runtime=$(jq -r '.runtime' "$f")
+          status=$(jq -r '.status' "$f")
+          duration=$(jq -r '.duration' "$f")
+          cache_hit=$(jq -r '.cache_hit' "$f")
+          size=$(jq -r '.size_bytes' "$f")
+
+          status_icon=$([ "$status" = "success" ] && echo "✅" || echo "❌")
+          cache_icon=$([ "$cache_hit" = "true" ] && echo "✅" || echo "❌")
+
+          mins=$((duration / 60))
+          secs=$((duration % 60))
+          duration_str=$(printf "%d min %02d s" "$mins" "$secs")
+
+          if [ "$size" -ge 1073741824 ]; then
+            size_str=$(printf "%.1f GB" "$(echo "scale=1; $size/1073741824" | bc)")
+          elif [ "$size" -ge 1048576 ]; then
+            size_str=$(printf "%.1f MB" "$(echo "scale=1; $size/1048576" | bc)")
+          else
+            size_str=$(printf "%.1f KB" "$(echo "scale=1; $size/1024" | bc)")
+          fi
+
+          tests_passed=$(jq -r '.tests_passed // 0' "$f")
+          tests_failed=$(jq -r '.tests_failed // 0' "$f")
+          tests_skipped=$(jq -r '.tests_skipped // 0' "$f")
+          tests_total=$(jq -r '.tests_total // 0' "$f")
+
+          if [ "$tests_total" -eq 0 ]; then
+            test_display="N/A"
+          else
+            if [ "$tests_failed" -gt 0 ]; then
+              test_icon="❌"
+            else
+              test_icon="✅"
+            fi
+
+            if [ "$tests_skipped" -gt 0 ]; then
+              test_display="${test_icon} ${tests_passed}+${tests_skipped}/${tests_total}"
+            else
+              test_display="${test_icon} ${tests_passed}/${tests_total}"
+            fi
+          fi
+
+          printf "| %s | %s | %s | %s | %s | %s | %s |\n" \
+            "$os" "$runtime" "$status_icon" "$test_display" "$duration_str" "$cache_icon" "$size_str"
+        done | sort -t'|' -k2,2 -k3,3 >> $GITHUB_STEP_SUMMARY
+
+        # Count builds
+        total_builds=${{ inputs.total-builds }}
+        success_builds=0
+        for f in metrics/metric-*.json; do
+          [ ! -f "$f" ] && continue
+          if jq -e '.status == "success"' "$f" >/dev/null 2>&1; then
+            ((success_builds++))
+          fi
+        done
+
+        echo "" >> $GITHUB_STEP_SUMMARY
+        if [ "$success_builds" -eq "$total_builds" ]; then
+          echo "## ✅ $success_builds/$total_builds Builds Complete" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "## ⚠️ $success_builds/$total_builds Builds Complete" >> $GITHUB_STEP_SUMMARY
+        fi
+
+        exit 0
+
+    - if: inputs.command == 'generate-summary'
+      shell: bash
+      run: rm -rf metrics/

@@ -2,7 +2,6 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tracing::{Level, error, info};
-use tracing_subscriber;
 mod detector;
 mod provider;
 use detector::Detector;
